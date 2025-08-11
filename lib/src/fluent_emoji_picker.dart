@@ -774,9 +774,6 @@ class EmojiItem extends StatelessWidget {
   Widget build(BuildContext context) {
     return GestureDetector(
       onTapUp: (details) => onTap(emoji, details.globalPosition),
-      // Fallback: if gesture system doesn't call onTapUp for some reason,
-      // still call without position on onTap (keeps behavior robust)
-      onTap: () => onTap(emoji, null),
       child: Container(
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(8),
