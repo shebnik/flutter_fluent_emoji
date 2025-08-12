@@ -43,6 +43,7 @@ class _MyHomePageState extends State<MyHomePage> {
       context: context,
       height: MediaQuery.of(context).size.height * 0.6,
       searchHintText: 'Search for emojis...',
+      showSearch: true,
     );
 
     if (emoji != null) {

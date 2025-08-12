@@ -598,24 +598,51 @@ class _FluentEmojiPickerState extends State<FluentEmojiPicker>
       );
     }
 
+    final searchBar = Padding(
+      padding: const EdgeInsets.all(16),
+      child: Theme(
+        data: Theme.of(context),
+        child: TextField(
+          controller: _searchController,
+          decoration: InputDecoration(
+            hintText: widget.searchHintText,
+            prefixIcon: const Icon(Icons.search),
+            suffixIcon: _searchController.text.isNotEmpty
+                ? IconButton(
+                    icon: const Icon(Icons.clear),
+                    onPressed: () => _searchController.clear(),
+                  )
+                : null,
+          ),
+        ),
+      ),
+    );
+
+    final tabBar = TabBar(
+      padding: EdgeInsets.zero,
+      dividerColor: Colors.black,
+      unselectedLabelStyle: widget.textStyle,
+      controller: _tabController,
+      labelColor: Colors.black,
+      isScrollable: true,
+      tabs: _categories.map((category) => Tab(text: category)).toList(),
+      labelStyle: widget.categoryTextStyle,
+      indicatorColor: Colors.black,
+      overlayColor: WidgetStatePropertyAll(Colors.transparent),
+    );
+
+    final contentView = Expanded(
+      child: _isSearching ? _buildSearchResults() : _buildTabBarView(),
+    );
+
     if (!widget.isSheet) {
       return Column(
         children: [
-          TabBar(
-            padding: EdgeInsets.zero,
-            dividerColor: Colors.black,
-            unselectedLabelStyle: widget.textStyle,
-            controller: _tabController,
-            labelColor: Colors.black,
-            isScrollable: true,
-            tabs: _categories.map((category) => Tab(text: category)).toList(),
-            labelStyle: widget.categoryTextStyle,
-            indicatorColor: Colors.black,
-            overlayColor: WidgetStatePropertyAll(Colors.transparent),
-          ),
-          Expanded(
-            child: _isSearching ? _buildSearchResults() : _buildTabBarView(),
-          ),
+          // Search bar
+          if (widget.showSearch) searchBar,
+          // Category tabs
+          if (!_isSearching && _categories.isNotEmpty) tabBar,
+          contentView,
         ],
       );
     }
@@ -641,43 +668,16 @@ class _FluentEmojiPickerState extends State<FluentEmojiPicker>
           ),
 
           // Search bar
-          if (widget.showSearch)
-            Padding(
-              padding: const EdgeInsets.all(16),
-              child: TextField(
-                controller: _searchController,
-                decoration: InputDecoration(
-                  hintText: widget.searchHintText,
-                  prefixIcon: const Icon(Icons.search),
-                  suffixIcon: _searchController.text.isNotEmpty
-                      ? IconButton(
-                          icon: const Icon(Icons.clear),
-                          onPressed: () => _searchController.clear(),
-                        )
-                      : null,
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                ),
-              ),
-            ),
+          if (widget.showSearch) searchBar,
 
           // Style selector
           if (!_isSearching && widget.showStyleSelector) _buildStyleSelector(),
 
           // Category tabs
-          if (!_isSearching && _categories.isNotEmpty)
-            TabBar(
-              controller: _tabController,
-              isScrollable: true,
-              tabs: _categories.map((category) => Tab(text: category)).toList(),
-              labelStyle: widget.categoryTextStyle,
-            ),
+          if (!_isSearching && _categories.isNotEmpty) tabBar,
 
           // Emoji content
-          Expanded(
-            child: _isSearching ? _buildSearchResults() : _buildTabBarView(),
-          ),
+          contentView,
         ],
       ),
     );
@@ -760,22 +760,26 @@ class _FluentEmojiPickerState extends State<FluentEmojiPicker>
 
   Widget _buildSearchResults() {
     if (_searchResults.isEmpty) {
-      return const Center(
-        child: Text(
-          'No emojis found',
-          style: TextStyle(fontSize: 16, color: Colors.grey),
-        ),
-      );
+      return const SizedBox.shrink();
     }
 
-    // For search results, show immediately without caching
-    return CategoryPage(
-      key: ValueKey('search-${_selectedStyle.value}'),
-      category: 'Search Results',
+    // For search results, use a combined cache from all categories
+    final combinedCache = <String, Uint8List>{};
+    for (final category in _categories) {
+      final categoryCache = _cacheManager.getCategoryImageCache(
+        category,
+        _selectedStyle,
+      );
+      combinedCache.addAll(categoryCache);
+    }
+
+    return SearchResultsGrid(
+      key: const ValueKey(
+        'search-results-grid',
+      ), // Stable key to prevent rebuilds
       emojis: _searchResults,
-      isFullyLoaded: true,
       selectedStyle: _selectedStyle,
-      imageCache: const {}, // No cache for search results
+      imageCache: combinedCache,
       showingSkinTonesFor: _showingSkinTonesFor,
       onEmojiTap: _onEmojiTap,
       onCloseSkinTones: () => setState(() => _showingSkinTonesFor = null),
@@ -856,7 +860,96 @@ class CategoryPage extends StatelessWidget {
   }
 }
 
-// Fast emoji grid using cached images
+// Search results grid with emoji persistence to prevent flickering
+class SearchResultsGrid extends StatefulWidget {
+  final List<EmojiData> emojis;
+  final EmojiStyle selectedStyle;
+  final Map<String, Uint8List> imageCache;
+  final EmojiData? showingSkinTonesFor;
+  final Function(EmojiData, Offset?) onEmojiTap;
+  final VoidCallback onCloseSkinTones;
+  final Function(EmojiData)? onEmojiSelected;
+  final Offset? skinToneTapLocalPosition;
+  final ScrollController gridController;
+
+  const SearchResultsGrid({
+    required this.emojis,
+    required this.selectedStyle,
+    required this.imageCache,
+    required this.showingSkinTonesFor,
+    required this.onEmojiTap,
+    required this.onCloseSkinTones,
+    required this.onEmojiSelected,
+    required this.skinToneTapLocalPosition,
+    required this.gridController,
+    super.key,
+  });
+
+  @override
+  State<SearchResultsGrid> createState() => _SearchResultsGridState();
+}
+
+class _SearchResultsGridState extends State<SearchResultsGrid> {
+  // Keep track of displayed emojis with stable keys
+  final Map<String, EmojiData> _displayedEmojis = {};
+  final Map<String, Widget> _emojiWidgets = {};
+
+  @override
+  Widget build(BuildContext context) {
+    // Update displayed emojis, keeping existing ones stable
+    final currentEmojiKeys = widget.emojis.map((e) => e.cldr).toSet();
+
+    // Remove emojis that are no longer in search results
+    _displayedEmojis.removeWhere(
+      (key, value) => !currentEmojiKeys.contains(key),
+    );
+    _emojiWidgets.removeWhere((key, value) => !currentEmojiKeys.contains(key));
+
+    // Add new emojis
+    for (final emoji in widget.emojis) {
+      if (!_displayedEmojis.containsKey(emoji.cldr)) {
+        _displayedEmojis[emoji.cldr] = emoji;
+        _emojiWidgets[emoji.cldr] = EmojiItem(
+          key: ValueKey('search-${emoji.cldr}-${widget.selectedStyle.value}'),
+          emoji: emoji,
+          selectedStyle: widget.selectedStyle,
+          imageCache: widget.imageCache,
+          onTap: widget.onEmojiTap,
+        );
+      }
+    }
+
+    return Stack(
+      children: [
+        GridView.builder(
+          controller: widget.gridController,
+          padding: const EdgeInsets.all(16),
+          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: 8,
+            crossAxisSpacing: 8,
+            mainAxisSpacing: 8,
+          ),
+          itemCount: widget.emojis.length,
+          itemBuilder: (context, index) {
+            final emoji = widget.emojis[index];
+            // Return the stable widget instance to prevent flickering
+            return _emojiWidgets[emoji.cldr] ?? const SizedBox.shrink();
+          },
+        ),
+        if (widget.showingSkinTonesFor != null)
+          SkinToneOverlay(
+            emoji: widget.showingSkinTonesFor!,
+            selectedStyle: widget.selectedStyle,
+            imageCache: widget.imageCache,
+            onClose: widget.onCloseSkinTones,
+            onEmojiSelected: widget.onEmojiSelected,
+            tapLocalPosition: widget.skinToneTapLocalPosition,
+          ),
+      ],
+    );
+  }
+}
+
 class EmojiGrid extends StatelessWidget {
   final List<EmojiData> emojis;
   final EmojiStyle selectedStyle;
@@ -1010,6 +1103,8 @@ class EmojiImage extends StatefulWidget {
 
 class _EmojiImageState extends State<EmojiImage> {
   String? _currentImageUrl;
+  bool _isLoading = false;
+  Image? _cachedImageWidget;
 
   @override
   Widget build(BuildContext context) {
@@ -1028,27 +1123,77 @@ class _EmojiImageState extends State<EmojiImage> {
     final cachedBytes = widget.imageCache[imageUrl];
 
     if (cachedBytes == null || cachedBytes.isEmpty) {
-      widget.onError?.call();
-      return const SizedBox.shrink();
+      // If not in cache and not loading, try to load it (useful for search results)
+      if (!_isLoading) {
+        _loadImageOnDemand(imageUrl);
+      }
+
+      // Show loading or placeholder while loading
+      return SizedBox(
+        width: widget.size,
+        height: widget.size,
+      );
     }
 
-    // Only rebuild ExtendedImage if URL actually changed
-    if (_currentImageUrl != imageUrl) {
+    // Only create new ExtendedImage if URL changed or widget is null
+    if (_currentImageUrl != imageUrl || _cachedImageWidget == null) {
       _currentImageUrl = imageUrl;
+      _cachedImageWidget = Image.memory(
+        cachedBytes,
+        width: widget.size,
+        height: widget.size,
+        fit: BoxFit.contain,
+        gaplessPlayback: true,
+        // Use a stable key based on emoji and style only
+        key: ValueKey(
+          'emoji-img-${widget.emoji.cldr}-${widget.selectedStyle.value}-${widget.skinTone?.value ?? "default"}',
+        ),
+      );
     }
 
-    // Display cached image instantly with unique key to prevent stream disposal issues
-    return Image.memory(
-      cachedBytes,
-      width: widget.size,
-      height: widget.size,
-      fit: BoxFit.contain,
-      gaplessPlayback: true,
-      // Use a unique key that includes widget instance and URL to prevent stream reuse issues
-      key: ValueKey('$hashCode-$imageUrl'),
-      // Clear memory cache on disposal to prevent stream issues
-      // clearMemoryCacheWhenDispose: true,
-    );
+    return _cachedImageWidget!;
+  }
+
+  Future<void> _loadImageOnDemand(String imageUrl) async {
+    if (_isLoading || !mounted) return;
+
+    setState(() {
+      _isLoading = true;
+    });
+
+    try {
+      final client = _HttpClient();
+      final response = await client.get(Uri.parse(imageUrl));
+
+      if (response.statusCode == 200 && response.bodyBytes.isNotEmpty) {
+        // Add to cache for future use
+        widget.imageCache[imageUrl] = response.bodyBytes;
+        if (mounted) {
+          setState(() {
+            _isLoading = false;
+            _cachedImageWidget = null; // Force recreation with new bytes
+          });
+        }
+      } else {
+        // Mark as failed
+        widget.imageCache[imageUrl] = Uint8List(0);
+        if (mounted) {
+          setState(() {
+            _isLoading = false;
+          });
+          widget.onError?.call();
+        }
+      }
+    } catch (e) {
+      // Mark as failed
+      widget.imageCache[imageUrl] = Uint8List(0);
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+        widget.onError?.call();
+      }
+    }
   }
 }
 
