@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:extended_image/extended_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
@@ -84,7 +83,6 @@ class FluentEmojiPicker extends StatefulWidget {
   }
 }
 
-// Global cache manager for persistent storage across widget lifecycles
 // Global cache manager for persistent storage across widget lifecycles
 class _EmojiCacheManager {
   static final _EmojiCacheManager _instance = _EmojiCacheManager._internal();
@@ -888,7 +886,7 @@ class EmojiGrid extends StatelessWidget {
       itemCount: emojis.length,
       itemBuilder: (context, index) {
         return EmojiItem(
-          key: ValueKey('${emojis[index].cldr}-${selectedStyle.value}'),
+          key: ValueKey('${emojis[index].cldr}-${selectedStyle.value}-$index'),
           emoji: emojis[index],
           selectedStyle: selectedStyle,
           imageCache: imageCache,
@@ -900,7 +898,7 @@ class EmojiGrid extends StatelessWidget {
 }
 
 // Fast emoji item using cached image bytes
-class EmojiItem extends StatelessWidget {
+class EmojiItem extends StatefulWidget {
   final EmojiData emoji;
   final EmojiStyle selectedStyle;
   final Map<String, Uint8List> imageCache;
@@ -915,9 +913,14 @@ class EmojiItem extends StatelessWidget {
   });
 
   @override
+  State<EmojiItem> createState() => _EmojiItemState();
+}
+
+class _EmojiItemState extends State<EmojiItem> {
+  @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onTapUp: (details) => onTap(emoji, details.globalPosition),
+      onTapUp: (details) => widget.onTap(widget.emoji, details.globalPosition),
       child: Container(
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(8),
@@ -927,13 +930,13 @@ class EmojiItem extends StatelessWidget {
           children: [
             Center(
               child: EmojiImage(
-                emoji: emoji,
-                selectedStyle: selectedStyle,
-                imageCache: imageCache,
+                emoji: widget.emoji,
+                selectedStyle: widget.selectedStyle,
+                imageCache: widget.imageCache,
                 size: 32,
               ),
             ),
-            if (emoji.isSkintoneBased)
+            if (widget.emoji.isSkintoneBased)
               Positioned(right: 0, bottom: 0, child: BottomRightHalfSquare()),
           ],
         ),
@@ -982,8 +985,8 @@ class _BottomRightHalfSquareClipper extends CustomClipper<Path> {
   bool shouldReclip(covariant CustomClipper<Path> oldClipper) => false;
 }
 
-// Ultra-fast emoji image using cached bytes
-class EmojiImage extends StatelessWidget {
+// Ultra-fast emoji image using cached bytes with proper disposal handling
+class EmojiImage extends StatefulWidget {
   final EmojiData emoji;
   final EmojiStyle selectedStyle;
   final Map<String, Uint8List> imageCache;
@@ -1002,41 +1005,54 @@ class EmojiImage extends StatelessWidget {
   });
 
   @override
+  State<EmojiImage> createState() => _EmojiImageState();
+}
+
+class _EmojiImageState extends State<EmojiImage> {
+  String? _currentImageUrl;
+
+  @override
   Widget build(BuildContext context) {
     final imageUrl = EmojiService.getEmojiImageUrl(
-      emoji,
-      style: selectedStyle,
-      skinTone: skinTone ?? SkinTone.defaultTone,
+      widget.emoji,
+      style: widget.selectedStyle,
+      skinTone: widget.skinTone ?? SkinTone.defaultTone,
     );
 
     if (imageUrl.isEmpty) {
-      onError?.call();
-      debugPrint('Emoji image URL is empty for: ${emoji.cldr}');
-      return SizedBox.shrink();
+      widget.onError?.call();
+      return const SizedBox.shrink();
     }
 
     // Get cached image bytes
-    final cachedBytes = imageCache[imageUrl];
+    final cachedBytes = widget.imageCache[imageUrl];
 
     if (cachedBytes == null || cachedBytes.isEmpty) {
-      onError?.call();
-      debugPrint('Emoji image not found in cache: $imageUrl');
-      return SizedBox.shrink();
+      widget.onError?.call();
+      return const SizedBox.shrink();
     }
 
-    // Display cached image instantly
-    return ExtendedImage.memory(
+    // Only rebuild ExtendedImage if URL actually changed
+    if (_currentImageUrl != imageUrl) {
+      _currentImageUrl = imageUrl;
+    }
+
+    // Display cached image instantly with unique key to prevent stream disposal issues
+    return Image.memory(
       cachedBytes,
-      width: size,
-      height: size,
+      width: widget.size,
+      height: widget.size,
       fit: BoxFit.contain,
       gaplessPlayback: true,
-      key: ValueKey(imageUrl),
+      // Use a unique key that includes widget instance and URL to prevent stream reuse issues
+      key: ValueKey('$hashCode-$imageUrl'),
+      // Clear memory cache on disposal to prevent stream issues
+      // clearMemoryCacheWhenDispose: true,
     );
   }
 }
 
-// Skin tone overlay with cached images
+// Skin tone overlay with cached images and proper disposal
 class SkinToneOverlay extends StatefulWidget {
   final EmojiData emoji;
   final EmojiStyle selectedStyle;
@@ -1079,10 +1095,10 @@ class _SkinToneOverlayState extends State<SkinToneOverlay> {
 
   @override
   Widget build(BuildContext context) {
-    if (!isDisplaying || !_areSkinTonesLoaded()) return SizedBox.shrink();
+    if (!isDisplaying || !_areSkinTonesLoaded()) return const SizedBox.shrink();
 
-    final double itemSize = 24;
-    final double itemPadding = 12;
+    const double itemSize = 24;
+    const double itemPadding = 12;
     final int toneCount = SkinTone.values.length;
     final double popupWidth = (itemSize + itemPadding) * toneCount + 16;
     const double popupHeight = 56;
@@ -1143,6 +1159,9 @@ class _SkinToneOverlayState extends State<SkinToneOverlay> {
                         border: Border.all(color: Colors.grey[300]!, width: 1),
                       ),
                       child: EmojiImage(
+                        key: ValueKey(
+                          'skintone-${widget.emoji.cldr}-${skinTone.value}',
+                        ),
                         emoji: widget.emoji,
                         selectedStyle: widget.selectedStyle,
                         imageCache: widget.imageCache,
