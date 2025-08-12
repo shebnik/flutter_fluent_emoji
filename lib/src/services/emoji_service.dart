@@ -57,9 +57,23 @@ class EmojiService {
   }
 
   /// Get emojis by category
-  static Future<List<EmojiData>> getEmojisByCategory(String category) async {
+  static Future<List<EmojiData>> getEmojisByCategory(
+    String category,
+    EmojiStyle style,
+  ) async {
     final allEmojis = await getEmojis();
-    return allEmojis.values.where((emoji) => emoji.group == category).toList()
+    return allEmojis.values
+        .where(
+          (emoji) =>
+              emoji.group == category &&
+              ((emoji.styles?.containsKey(style.value) ?? false) ||
+                  (emoji.skintones?.values.any(
+                        (skinToneStyles) =>
+                            skinToneStyles.containsKey(style.value),
+                      ) ??
+                      false)),
+        )
+        .toList()
       ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
   }
 
@@ -171,9 +185,15 @@ class EmojiService {
   }) {
     if (emoji.isSkintoneBased && emoji.skintones != null) {
       final skinToneStyles = emoji.skintones![skinTone.value];
-      return skinToneStyles?[style.value] ?? '';
+      final url = skinToneStyles?[style.value];
+      if (url != null) {
+        return url;
+      }
     } else if (emoji.styles != null) {
-      return emoji.styles![style.value] ?? '';
+      final url = emoji.styles![style.value];
+      if (url != null) {
+        return url;
+      }
     }
     return '';
   }

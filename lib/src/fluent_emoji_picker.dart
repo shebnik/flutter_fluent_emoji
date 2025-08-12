@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_svg/svg.dart';
 import 'package:http/http.dart' as http;
 
 import 'models/emoji_data.dart';
@@ -82,24 +83,31 @@ class FluentEmojiPicker extends StatefulWidget {
 }
 
 // Global cache manager for persistent storage across widget lifecycles
+// Global cache manager for persistent storage across widget lifecycles
 class _EmojiCacheManager {
   static final _EmojiCacheManager _instance = _EmojiCacheManager._internal();
   factory _EmojiCacheManager() => _instance;
   _EmojiCacheManager._internal();
 
   // Persistent caches that survive widget disposal
+  // Now keyed by both category and style: "category:style"
   final Map<String, List<EmojiData>> _categoryDataCache = {};
   final Map<String, bool> _categoryFullyLoaded = {};
   final Map<String, Map<String, Uint8List>> _imageCache = {};
   final Set<String> _loadingCategories = {};
 
-  // Getters for cache access
+  // Helper method to create cache key
+  String _getCacheKey(String category, EmojiStyle style) {
+    return '$category:${style.value}';
+  }
+
+  // Getters for cache access (these remain for backward compatibility)
   Map<String, List<EmojiData>> get categoryDataCache => _categoryDataCache;
   Map<String, bool> get categoryFullyLoaded => _categoryFullyLoaded;
   Map<String, Map<String, Uint8List>> get imageCache => _imageCache;
   Set<String> get loadingCategories => _loadingCategories;
 
-  // Clear all caches (useful for style changes)
+  // Clear all caches (useful for complete reset)
   void clearAllCaches() {
     _categoryDataCache.clear();
     _categoryFullyLoaded.clear();
@@ -114,35 +122,92 @@ class _EmojiCacheManager {
     // Keep category data cache as it doesn't depend on style
   }
 
-  bool isCategoryFullyLoaded(String category) {
-    return _categoryFullyLoaded[category] == true;
-  }
+  // Clear caches for a specific style only
+  void clearCachesForStyle(EmojiStyle style) {
+    // Remove entries for this specific style
+    final keysToRemove = <String>[];
 
-  void markCategoryAsLoaded(String category) {
-    _categoryFullyLoaded[category] = true;
-  }
-
-  void markCategoryAsLoading(String category) {
-    _loadingCategories.add(category);
-  }
-
-  void markCategoryAsNotLoading(String category) {
-    _loadingCategories.remove(category);
-  }
-
-  List<EmojiData> getCategoryEmojis(String category) {
-    return _categoryDataCache[category] ?? [];
-  }
-
-  void setCategoryEmojis(String category, List<EmojiData> emojis) {
-    _categoryDataCache[category] = emojis;
-  }
-
-  Map<String, Uint8List> getCategoryImageCache(String category) {
-    if (!_imageCache.containsKey(category)) {
-      _imageCache[category] = {};
+    for (final key in _categoryFullyLoaded.keys) {
+      if (key.endsWith(':${style.value}')) {
+        keysToRemove.add(key);
+      }
     }
-    return _imageCache[category]!;
+
+    for (final key in keysToRemove) {
+      _categoryFullyLoaded.remove(key);
+      _imageCache.remove(key);
+    }
+
+    // Remove loading states for this style
+    _loadingCategories.removeWhere((key) => key.endsWith(':${style.value}'));
+  }
+
+  bool isCategoryFullyLoaded(String category, EmojiStyle style) {
+    final key = _getCacheKey(category, style);
+    return _categoryFullyLoaded[key] == true;
+  }
+
+  void markCategoryAsLoaded(String category, EmojiStyle style) {
+    final key = _getCacheKey(category, style);
+    _categoryFullyLoaded[key] = true;
+  }
+
+  void markCategoryAsLoading(String category, EmojiStyle style) {
+    final key = _getCacheKey(category, style);
+    _loadingCategories.add(key);
+  }
+
+  void markCategoryAsNotLoading(String category, EmojiStyle style) {
+    final key = _getCacheKey(category, style);
+    _loadingCategories.remove(key);
+  }
+
+  bool isCategoryLoading(String category, EmojiStyle style) {
+    final key = _getCacheKey(category, style);
+    return _loadingCategories.contains(key);
+  }
+
+  List<EmojiData> getCategoryEmojis(String category, EmojiStyle style) {
+    final key = _getCacheKey(category, style);
+    return _categoryDataCache[key] ?? [];
+  }
+
+  void setCategoryEmojis(
+    String category,
+    EmojiStyle style,
+    List<EmojiData> emojis,
+  ) {
+    final key = _getCacheKey(category, style);
+    _categoryDataCache[key] = emojis;
+  }
+
+  Map<String, Uint8List> getCategoryImageCache(
+    String category,
+    EmojiStyle style,
+  ) {
+    final key = _getCacheKey(category, style);
+    if (!_imageCache.containsKey(key)) {
+      _imageCache[key] = {};
+    }
+    return _imageCache[key]!;
+  }
+
+  // Debug method to show cache status
+  void printCacheStatus() {
+    debugPrint('=== Cache Status ===');
+    debugPrint('Category Data Cache: ${_categoryDataCache.length} entries');
+    debugPrint('Fully Loaded: ${_categoryFullyLoaded.length} entries');
+    debugPrint('Image Cache: ${_imageCache.length} entries');
+    debugPrint('Loading: ${_loadingCategories.length} entries');
+
+    for (final key in _categoryDataCache.keys) {
+      final emojisCount = _categoryDataCache[key]?.length ?? 0;
+      final isLoaded = _categoryFullyLoaded[key] ?? false;
+      final imageCount = _imageCache[key]?.length ?? 0;
+      debugPrint(
+        '  $key: $emojisCount emojis, loaded: $isLoaded, images: $imageCount',
+      );
+    }
   }
 }
 
@@ -157,7 +222,11 @@ class _FluentEmojiPickerState extends State<FluentEmojiPicker>
   EmojiStyle _selectedStyle = EmojiStyle.threeDimensional;
   EmojiData? _showingSkinTonesFor;
   Offset? _skinToneTapLocalPosition;
-  final ScrollController _gridController = ScrollController();
+  late final _httpClient = _HttpClient();
+
+  // Create a map to store individual scroll controllers for each category
+  final Map<String, ScrollController> _scrollControllers = {};
+  ScrollController? _searchScrollController;
 
   @override
   void initState() {
@@ -165,15 +234,33 @@ class _FluentEmojiPickerState extends State<FluentEmojiPicker>
     _selectedStyle = widget.defaultStyle;
     _loadCategories();
     _searchController.addListener(_onSearchChanged);
-    _gridController.addListener(_onGridScroll);
+    _searchScrollController = ScrollController();
+    _searchScrollController!.addListener(_onGridScroll);
   }
 
   @override
   void dispose() {
     _tabController.dispose();
     _searchController.dispose();
-    // Don't dispose HTTP client as it's shared across instances
+    _searchScrollController?.dispose();
+
+    // Dispose all category scroll controllers
+    for (final controller in _scrollControllers.values) {
+      controller.dispose();
+    }
+    _scrollControllers.clear();
+
     super.dispose();
+  }
+
+  // Get or create a scroll controller for a specific category
+  ScrollController _getScrollControllerForCategory(String category) {
+    if (!_scrollControllers.containsKey(category)) {
+      final controller = ScrollController();
+      controller.addListener(_onGridScroll);
+      _scrollControllers[category] = controller;
+    }
+    return _scrollControllers[category]!;
   }
 
   Future<void> _loadCategories() async {
@@ -229,41 +316,36 @@ class _FluentEmojiPickerState extends State<FluentEmojiPicker>
   }
 
   bool _isCategoryFullyLoaded(String category) {
-    return _cacheManager.isCategoryFullyLoaded(category);
+    return _cacheManager.isCategoryFullyLoaded(category, _selectedStyle);
   }
 
   Future<void> _loadCategoryCompletely(String category) async {
-    if (_cacheManager.loadingCategories.contains(category) ||
+    if (_cacheManager.isCategoryLoading(category, _selectedStyle) ||
         _isCategoryFullyLoaded(category)) {
       return;
     }
 
-    _cacheManager.markCategoryAsLoading(category);
+    _cacheManager.markCategoryAsLoading(category, _selectedStyle);
 
     try {
-      // Update UI to show loading for current category
-      // if (_categories.isNotEmpty &&
-      //     _categories[_tabController.index] == category) {
-      //   setState(() {
-      //   });
-      // }
-
-      // Step 1: Load emoji data
+      // Step 1: Load emoji data (this might be shared across styles)
       List<EmojiData> emojis;
-      if (_cacheManager.categoryDataCache.containsKey(category)) {
-        emojis = _cacheManager.getCategoryEmojis(category);
-        // debugPrint('Using cached emoji data for category: $category');
+      final cachedEmojis = _cacheManager.getCategoryEmojis(
+        category,
+        _selectedStyle,
+      );
+      if (cachedEmojis.isNotEmpty) {
+        emojis = cachedEmojis;
       } else {
-        // debugPrint('Fetching emoji data for category: $category');
-        emojis = await EmojiService.getEmojisByCategory(category);
-        _cacheManager.setCategoryEmojis(category, emojis);
+        emojis = await EmojiService.getEmojisByCategory(category, _selectedStyle);
+        _cacheManager.setCategoryEmojis(category, _selectedStyle, emojis);
       }
 
-      // Step 2: Pre-load all images for this category
+      // Step 2: Pre-load all images for this category and style
       await _preloadCategoryImages(category, emojis);
 
-      // Mark as fully loaded
-      _cacheManager.markCategoryAsLoaded(category);
+      // Mark as fully loaded for this specific style
+      _cacheManager.markCategoryAsLoaded(category, _selectedStyle);
 
       // Update UI to show the category
       if (mounted &&
@@ -272,20 +354,12 @@ class _FluentEmojiPickerState extends State<FluentEmojiPicker>
         setState(() {});
       }
     } catch (e) {
-      // debugPrint('Error loading category $category: $e');
       // Mark as loaded with empty data to prevent infinite loading
-      _cacheManager.setCategoryEmojis(category, []);
-      _cacheManager.markCategoryAsLoaded(category);
-
-      // if (mounted &&
-      //     _categories.isNotEmpty &&
-      //     _categories[_tabController.index] == category) {
-      //   setState(() {
-      //   });
-      // }
+      _cacheManager.setCategoryEmojis(category, _selectedStyle, []);
+      _cacheManager.markCategoryAsLoaded(category, _selectedStyle);
     } finally {
-      _cacheManager.markCategoryAsNotLoading(category);
-      setState(() {});
+      _cacheManager.markCategoryAsNotLoading(category, _selectedStyle);
+      if (mounted) setState(() {});
     }
   }
 
@@ -294,7 +368,10 @@ class _FluentEmojiPickerState extends State<FluentEmojiPicker>
     List<EmojiData> emojis, {
     bool preloadSkinTones = false,
   }) async {
-    final categoryImages = _cacheManager.getCategoryImageCache(category);
+    final categoryImages = _cacheManager.getCategoryImageCache(
+      category,
+      _selectedStyle,
+    );
     final imagesToLoad = <String>[];
 
     for (final emoji in emojis) {
@@ -323,32 +400,16 @@ class _FluentEmojiPickerState extends State<FluentEmojiPicker>
     }
 
     if (imagesToLoad.isEmpty) {
-      // debugPrint('All images already cached for category: $category');
       return;
     }
 
-    // debugPrint('Loading ${imagesToLoad.length} images for category: $category');
-
-    const batchSize = 100;
+    final batchSize = _selectedStyle == EmojiStyle.animated ? 5 : 100;
 
     for (int i = 0; i < imagesToLoad.length; i += batchSize) {
       final batch = imagesToLoad.skip(i).take(batchSize).toList();
 
       try {
-        await _loadImageBatch(category, batch).timeout(
-          const Duration(seconds: 1),
-          onTimeout: () {
-            debugPrint(
-              'Batch timeout for category: $category, batch: ${i ~/ batchSize + 1}',
-            );
-            // Mark remaining images as failed to prevent hanging
-            for (final imageUrl in batch) {
-              if (!categoryImages.containsKey(imageUrl)) {
-                categoryImages[imageUrl] = Uint8List(0);
-              }
-            }
-          },
-        );
+        await _loadImageBatch(category, batch);
       } catch (e) {
         debugPrint('Batch error for category: $category, error: $e');
         // Mark batch images as failed
@@ -363,7 +424,9 @@ class _FluentEmojiPickerState extends State<FluentEmojiPicker>
       }
     }
 
-    debugPrint('Finished loading images for category: $category');
+    // debugPrint(
+    //   'Finished loading images for category: $category, style: ${_selectedStyle.value}',
+    // );
   }
 
   Future<void> _preloadSkinTonesForEmoji(
@@ -372,7 +435,10 @@ class _FluentEmojiPickerState extends State<FluentEmojiPicker>
   ) async {
     if (!emoji.isSkintoneBased || emoji.skintones == null) return;
 
-    final categoryImages = _cacheManager.getCategoryImageCache(category);
+    final categoryImages = _cacheManager.getCategoryImageCache(
+      category,
+      _selectedStyle,
+    );
     final imagesToLoad = <String>[];
 
     // Load all skin tone variants for this specific emoji
@@ -410,23 +476,29 @@ class _FluentEmojiPickerState extends State<FluentEmojiPicker>
   }
 
   Future<void> _loadImageBatch(String category, List<String> imageUrls) async {
-    final categoryImages = _cacheManager.getCategoryImageCache(category);
+    final categoryImages = _cacheManager.getCategoryImageCache(
+      category,
+      _selectedStyle,
+    );
 
     final futures = imageUrls.map((imageUrl) async {
       try {
-        // debugPrint('Loading image: $imageUrl');
         final response = await _httpClient.get(Uri.parse(imageUrl));
+        // .timeout(
+        //   Duration(seconds: _selectedStyle == EmojiStyle.animated ? 10 : 3),
+        //   onTimeout: () {
+        //     debugPrint(
+        //       'Image load timeout for: $imageUrl, category: $category, style: ${_selectedStyle.value}',
+        //     );
+        //     return _HttpResponse(408, Uint8List(0));
+        //   },
+        // );
         if (response.statusCode == 200 && response.bodyBytes.isNotEmpty) {
           categoryImages[imageUrl] = response.bodyBytes;
-          // debugPrint('Successfully loaded image: $imageUrl');
         } else {
-          // debugPrint(
-          //   'Failed to load image (status ${response.statusCode}): $imageUrl',
-          // );
           categoryImages[imageUrl] = Uint8List(0);
         }
       } catch (e) {
-        // debugPrint('Error loading image $imageUrl: $e');
         categoryImages[imageUrl] = Uint8List(0);
       }
     });
@@ -434,21 +506,18 @@ class _FluentEmojiPickerState extends State<FluentEmojiPicker>
     await Future.wait(futures, eagerError: false);
   }
 
-  // HTTP client instance (now persistent across widget lifecycles)
-  late final _httpClient = _HttpClient();
-
   void _preloadAdjacentCategories() {
     if (_categories.isEmpty) return;
 
     final currentIndex = _tabController.index;
 
-    // Preload next and previous categories
+    // Preload next and previous categories for current style
     for (int i = -1; i <= 1; i++) {
       final index = currentIndex + i;
       if (index >= 0 && index < _categories.length && index != currentIndex) {
         final category = _categories[index];
         if (!_isCategoryFullyLoaded(category) &&
-            !_cacheManager.loadingCategories.contains(category)) {
+            !_cacheManager.isCategoryLoading(category, _selectedStyle)) {
           // Load in background without await
           _loadCategoryCompletely(category);
         }
@@ -527,27 +596,24 @@ class _FluentEmojiPickerState extends State<FluentEmojiPicker>
     }
 
     if (!widget.isSheet) {
-      return SizedBox(
-        // height: widget.height,
-        child: Column(
-          children: [
-            TabBar(
-              padding: EdgeInsets.zero,
-              dividerColor: Colors.black,
-              unselectedLabelStyle: widget.textStyle,
-              controller: _tabController,
-              labelColor: Colors.black,
-              isScrollable: true,
-              tabs: _categories.map((category) => Tab(text: category)).toList(),
-              labelStyle: widget.categoryTextStyle,
-              indicatorColor: Colors.black,
-              overlayColor: WidgetStatePropertyAll(Colors.transparent),
-            ),
-            Expanded(
-              child: _isSearching ? _buildSearchResults() : _buildTabBarView(),
-            ),
-          ],
-        ),
+      return Column(
+        children: [
+          TabBar(
+            padding: EdgeInsets.zero,
+            dividerColor: Colors.black,
+            unselectedLabelStyle: widget.textStyle,
+            controller: _tabController,
+            labelColor: Colors.black,
+            isScrollable: true,
+            tabs: _categories.map((category) => Tab(text: category)).toList(),
+            labelStyle: widget.categoryTextStyle,
+            indicatorColor: Colors.black,
+            overlayColor: WidgetStatePropertyAll(Colors.transparent),
+          ),
+          Expanded(
+            child: _isSearching ? _buildSearchResults() : _buildTabBarView(),
+          ),
+        ],
       );
     }
 
@@ -630,9 +696,10 @@ class _FluentEmojiPickerState extends State<FluentEmojiPicker>
             )
             .toList(),
         onChanged: (style) {
+          final previousStyle = _selectedStyle;
           setState(() {
             _selectedStyle = style!;
-            // Clear caches for style change but keep category data
+            // Only clear image caches for style change, not emoji data
             _cacheManager.clearCachesForStyleChange();
           });
 
@@ -642,6 +709,10 @@ class _FluentEmojiPickerState extends State<FluentEmojiPicker>
             _loadCategoryCompletely(currentCategory);
             _preloadAdjacentCategories();
           }
+
+          debugPrint(
+            'Style changed from ${previousStyle.value} to ${style!.value}',
+          );
         },
       ),
     );
@@ -659,20 +730,22 @@ class _FluentEmojiPickerState extends State<FluentEmojiPicker>
       children: _categories
           .map(
             (category) => CategoryPage(
-              // Fixed key that includes all necessary state
               key: ValueKey('$category-${_selectedStyle.value}'),
               category: category,
-              emojis: _cacheManager.getCategoryEmojis(category),
+              emojis: _cacheManager.getCategoryEmojis(category, _selectedStyle),
               isFullyLoaded: _isCategoryFullyLoaded(category),
               selectedStyle: _selectedStyle,
-              imageCache: _cacheManager.getCategoryImageCache(category),
+              imageCache: _cacheManager.getCategoryImageCache(
+                category,
+                _selectedStyle,
+              ),
               showingSkinTonesFor: _showingSkinTonesFor,
               onEmojiTap: _onEmojiTap,
               onCloseSkinTones: () =>
                   setState(() => _showingSkinTonesFor = null),
               onEmojiSelected: widget.onEmojiSelected,
               skinToneTapLocalPosition: _skinToneTapLocalPosition,
-              gridController: _gridController,
+              gridController: _getScrollControllerForCategory(category),
             ),
           )
           .toList(),
@@ -702,7 +775,7 @@ class _FluentEmojiPickerState extends State<FluentEmojiPicker>
       onCloseSkinTones: () => setState(() => _showingSkinTonesFor = null),
       onEmojiSelected: widget.onEmojiSelected,
       skinToneTapLocalPosition: _skinToneTapLocalPosition,
-      gridController: _gridController,
+      gridController: _searchScrollController!,
     );
   }
 }
@@ -930,6 +1003,7 @@ class EmojiImage extends StatelessWidget {
 
     if (imageUrl.isEmpty) {
       onError?.call();
+      debugPrint('Emoji image URL is empty for: ${emoji.cldr}');
       return SizedBox.shrink();
     }
 
@@ -938,6 +1012,7 @@ class EmojiImage extends StatelessWidget {
 
     if (cachedBytes == null || cachedBytes.isEmpty) {
       onError?.call();
+      debugPrint('Emoji image not found in cache: $imageUrl');
       return SizedBox.shrink();
       // return Container(
       //   width: size,
@@ -951,12 +1026,27 @@ class EmojiImage extends StatelessWidget {
     }
 
     // Display cached image instantly
+    if (imageUrl.endsWith('.svg')) {
+      return SvgPicture.memory(
+        key: ValueKey(imageUrl),
+        cachedBytes,
+        width: size,
+        height: size,
+        fit: BoxFit.contain,
+        errorBuilder: (context, error, stackTrace) {
+          debugPrint('Error loading svg emoji image: $imageUrl, error: $error');
+          onError?.call();
+          return SizedBox.shrink();
+        },
+      );
+    }
     return Image.memory(
       cachedBytes,
       width: size,
       height: size,
       fit: BoxFit.contain,
       errorBuilder: (context, error, stackTrace) {
+        debugPrint('Error loading emoji image: $imageUrl, error: $error');
         onError?.call();
         return SizedBox.shrink();
         // return Container(
@@ -1016,7 +1106,7 @@ class _SkinToneOverlayState extends State<SkinToneOverlay> {
 
   @override
   Widget build(BuildContext context) {
-    if (!isDisplaying) return SizedBox.shrink();
+    if (!isDisplaying || !_areSkinTonesLoaded()) return SizedBox.shrink();
 
     final double itemSize = 24;
     final double itemPadding = 12;
@@ -1053,69 +1143,53 @@ class _SkinToneOverlayState extends State<SkinToneOverlay> {
               border: Border.all(color: Colors.grey[300]!, width: 1),
               boxShadow: [
                 BoxShadow(
-                  color: Colors.black.withOpacity(0.15),
+                  color: Colors.black.withAlpha(38),
                   blurRadius: 12,
                   offset: const Offset(0, 4),
                 ),
               ],
             ),
-            child: _areSkinTonesLoaded()
-                ? SingleChildScrollView(
-                    scrollDirection: Axis.horizontal,
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: SkinTone.values.map((skinTone) {
-                        return GestureDetector(
-                          onTap: () {
-                            final emojiWithSkinTone = widget.emoji.copyWith(
-                              selectedSkinTone: skinTone,
-                            );
-                            widget.onEmojiSelected?.call(emojiWithSkinTone);
-                            widget.onClose();
-                          },
-                          child: Container(
-                            margin: const EdgeInsets.symmetric(horizontal: 3),
-                            padding: const EdgeInsets.all(6),
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(
-                                color: Colors.grey[300]!,
-                                width: 1,
-                              ),
-                            ),
-                            child: EmojiImage(
-                              emoji: widget.emoji,
-                              selectedStyle: widget.selectedStyle,
-                              imageCache: widget.imageCache,
-                              size: itemSize,
-                              skinTone: skinTone,
-                              onError: () {
-                                WidgetsBinding.instance.addPostFrameCallback((
-                                  _,
-                                ) {
-                                  if (mounted) {
-                                    setState(() {
-                                      isDisplaying = false;
-                                    });
-                                  }
-                                });
-                              },
-                            ),
-                          ),
-                        );
-                      }).toList(),
-                    ),
-                  )
-                : Center(
-                    child: SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: Colors.grey[600],
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: SkinTone.values.map((skinTone) {
+                  return GestureDetector(
+                    onTap: () {
+                      final emojiWithSkinTone = widget.emoji.copyWith(
+                        selectedSkinTone: skinTone,
+                      );
+                      widget.onEmojiSelected?.call(emojiWithSkinTone);
+                      widget.onClose();
+                    },
+                    child: Container(
+                      margin: const EdgeInsets.symmetric(horizontal: 3),
+                      padding: const EdgeInsets.all(6),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.grey[300]!, width: 1),
+                      ),
+                      child: EmojiImage(
+                        emoji: widget.emoji,
+                        selectedStyle: widget.selectedStyle,
+                        imageCache: widget.imageCache,
+                        size: itemSize,
+                        skinTone: skinTone,
+                        onError: () {
+                          WidgetsBinding.instance.addPostFrameCallback((_) {
+                            if (mounted) {
+                              setState(() {
+                                isDisplaying = false;
+                              });
+                            }
+                          });
+                        },
                       ),
                     ),
-                  ),
+                  );
+                }).toList(),
+              ),
+            ),
           ),
         ),
       ),
