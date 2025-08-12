@@ -1,4 +1,4 @@
-import 'package:cached_network_image/cached_network_image.dart';
+import 'package:extended_image/extended_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_fluent_emoji/flutter_fluent_emoji.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -70,44 +70,12 @@ class _MyHomePageState extends State<MyHomePage> {
       );
     }
 
-    if (_selectedStyle == EmojiStyle.animated) {
-      return Image.network(
-        imageUrl,
-        width: size,
-        height: size,
-        fit: BoxFit.contain,
-      );
-    }
-
-    return CachedNetworkImage(
-      imageUrl: imageUrl,
+    return ExtendedImage.network(
+      imageUrl,
+      key: ValueKey(imageUrl),
       width: size,
       height: size,
       fit: BoxFit.contain,
-      placeholder: (context, url) => Container(
-        width: size,
-        height: size,
-        decoration: BoxDecoration(
-          color: Colors.grey[100],
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Center(
-          child: SizedBox(
-            width: size * 0.3,
-            height: size * 0.3,
-            child: const CircularProgressIndicator(strokeWidth: 2),
-          ),
-        ),
-      ),
-      errorWidget: (context, url, error) => Container(
-        width: size,
-        height: size,
-        decoration: BoxDecoration(
-          color: Colors.grey[300],
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Icon(Icons.broken_image, size: size * 0.5),
-      ),
     );
   }
 

@@ -1,8 +1,8 @@
 import 'dart:async';
 
+import 'package:extended_image/extended_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_svg/svg.dart';
 import 'package:http/http.dart' as http;
 
 import 'models/emoji_data.dart';
@@ -1022,51 +1022,16 @@ class EmojiImage extends StatelessWidget {
       onError?.call();
       debugPrint('Emoji image not found in cache: $imageUrl');
       return SizedBox.shrink();
-      // return Container(
-      //   width: size,
-      //   height: size,
-      //   decoration: BoxDecoration(
-      //     color: Colors.grey[300],
-      //     borderRadius: BorderRadius.circular(4),
-      //   ),
-      //   child: Icon(Icons.broken_image, size: size * 0.5),
-      // );
     }
 
     // Display cached image instantly
-    if (imageUrl.endsWith('.svg')) {
-      return SvgPicture.memory(
-        key: ValueKey(imageUrl),
-        cachedBytes,
-        width: size,
-        height: size,
-        fit: BoxFit.contain,
-        errorBuilder: (context, error, stackTrace) {
-          debugPrint('Error loading svg emoji image: $imageUrl, error: $error');
-          onError?.call();
-          return SizedBox.shrink();
-        },
-      );
-    }
-    return Image.memory(
+    return ExtendedImage.memory(
       cachedBytes,
       width: size,
       height: size,
       fit: BoxFit.contain,
-      errorBuilder: (context, error, stackTrace) {
-        debugPrint('Error loading emoji image: $imageUrl, error: $error');
-        onError?.call();
-        return SizedBox.shrink();
-        // return Container(
-        //   width: size,
-        //   height: size,
-        //   decoration: BoxDecoration(
-        //     color: Colors.grey[300],
-        //     borderRadius: BorderRadius.circular(4),
-        //   ),
-        //   child: Icon(Icons.broken_image, size: size * 0.5),
-        // );
-      },
+      gaplessPlayback: true,
+      key: ValueKey(imageUrl),
     );
   }
 }
