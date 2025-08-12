@@ -22,6 +22,7 @@ class FluentEmojiPicker extends StatefulWidget {
   final String searchHintText;
   final bool isSheet;
   final TextStyle? textStyle;
+  final bool isScrollable;
 
   const FluentEmojiPicker({
     super.key,
@@ -35,6 +36,7 @@ class FluentEmojiPicker extends StatefulWidget {
     this.showStyleSelector = false,
     this.searchHintText = 'Search emojis...',
     this.isSheet = true,
+    this.isScrollable = false,
     this.textStyle,
   });
 
@@ -337,7 +339,10 @@ class _FluentEmojiPickerState extends State<FluentEmojiPicker>
       if (cachedEmojis.isNotEmpty) {
         emojis = cachedEmojis;
       } else {
-        emojis = await EmojiService.getEmojisByCategory(category, _selectedStyle);
+        emojis = await EmojiService.getEmojisByCategory(
+          category,
+          _selectedStyle,
+        );
         _cacheManager.setCategoryEmojis(category, _selectedStyle, emojis);
       }
 
@@ -727,6 +732,9 @@ class _FluentEmojiPickerState extends State<FluentEmojiPicker>
 
     return TabBarView(
       controller: _tabController,
+      physics: widget.isScrollable
+          ? null
+          : const NeverScrollableScrollPhysics(),
       children: _categories
           .map(
             (category) => CategoryPage(
