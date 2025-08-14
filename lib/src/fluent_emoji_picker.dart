@@ -423,13 +423,126 @@ class _FluentEmojiPickerState extends State<FluentEmojiPicker>
     }
   }
 
+  Future<void> _loadSearchImageBatch(List<String> imageUrls) async {
+    final searchImageCache = _emojiCacheManager.getSearchImageCache(
+      _selectedStyle,
+    );
+
+    final futures = imageUrls.map((imageUrl) async {
+      try {
+        final response = await _httpClient.get(Uri.parse(imageUrl));
+        if (response.statusCode == 200 && response.bodyBytes.isNotEmpty) {
+          searchImageCache[imageUrl] = response.bodyBytes;
+        } else {
+          searchImageCache[imageUrl] = Uint8List(0);
+        }
+      } catch (e) {
+        searchImageCache[imageUrl] = Uint8List(0);
+      }
+    });
+
+    await Future.wait(futures, eagerError: false);
+  }
+
+  Future<void> _preloadSearchResultImages(List<EmojiData> emojis) async {
+    if (emojis.isEmpty) return;
+
+    final searchImageCache = _emojiCacheManager.getSearchImageCache(
+      _selectedStyle,
+    );
+    final imagesToLoad = <String>[];
+
+    // Collect images that need to be loaded
+    for (final emoji in emojis) {
+      final imageUrl = EmojiService.getEmojiImageUrl(
+        emoji,
+        style: _selectedStyle,
+        skinTone: SkinTone.defaultTone,
+      );
+      if (imageUrl.isNotEmpty && !searchImageCache.containsKey(imageUrl)) {
+        imagesToLoad.add(imageUrl);
+      }
+    }
+
+    if (imagesToLoad.isEmpty) return;
+
+    // Load images in smaller batches for search results
+    const batchSize = 20;
+    for (int i = 0; i < imagesToLoad.length; i += batchSize) {
+      final batch = imagesToLoad.skip(i).take(batchSize).toList();
+
+      try {
+        await _loadSearchImageBatch(batch);
+      } catch (e) {
+        debugPrint('Search image batch error: $e');
+        // Mark batch images as failed
+        for (final imageUrl in batch) {
+          searchImageCache[imageUrl] = Uint8List(0);
+        }
+      }
+
+      // Update UI after each batch
+      if (mounted) {
+        setState(() {});
+      }
+
+      // Small delay between batches
+      if (i + batchSize < imagesToLoad.length) {
+        await Future.delayed(const Duration(milliseconds: 100));
+      }
+    }
+  }
+
   Future<void> _performSearch(String query) async {
     final results = await EmojiService.searchEmojis(query);
     if (_searchController.text == query && mounted) {
       setState(() {
         _searchResults = results;
       });
+
+      // Preload images for search results
+      _preloadSearchResultImages(results);
     }
+  }
+
+  Future<void> _preloadSkinTonesForSearchEmoji(EmojiData emoji) async {
+    if (!emoji.isSkintoneBased || emoji.skintones == null) return;
+
+    final searchImageCache = _emojiCacheManager.getSearchImageCache(
+      _selectedStyle,
+    );
+    final imagesToLoad = <String>[];
+
+    // Load all skin tone variants for this specific emoji
+    for (final skin in SkinTone.values) {
+      final imageUrl = EmojiService.getEmojiImageUrl(
+        emoji,
+        style: _selectedStyle,
+        skinTone: skin,
+      );
+      if (imageUrl.isNotEmpty && !searchImageCache.containsKey(imageUrl)) {
+        imagesToLoad.add(imageUrl);
+      }
+    }
+
+    if (imagesToLoad.isEmpty) return;
+
+    // Load skin tone images quickly
+    final futures = imagesToLoad.map((imageUrl) async {
+      try {
+        final response = await _httpClient.get(Uri.parse(imageUrl));
+        if (response.statusCode == 200 && response.bodyBytes.isNotEmpty) {
+          searchImageCache[imageUrl] = response.bodyBytes;
+        } else {
+          searchImageCache[imageUrl] = Uint8List(0);
+        }
+      } catch (e) {
+        searchImageCache[imageUrl] = Uint8List(0);
+      }
+    });
+
+    await Future.wait(futures, eagerError: false);
+    setState(() {});
   }
 
   // Updated _onEmojiTap method to ensure cache keys are set
@@ -448,11 +561,17 @@ class _FluentEmojiPickerState extends State<FluentEmojiPicker>
         });
 
         // Preload skin tones for this emoji when overlay is shown
-        final currentCategory = _categories.isNotEmpty
-            ? _categories[_tabController.index]
-            : '';
-        if (currentCategory.isNotEmpty) {
-          _preloadSkinTonesForEmoji(currentCategory, emojiWithCacheKey);
+        if (_isSearching) {
+          // For search results, preload to search cache
+          _preloadSkinTonesForSearchEmoji(emojiWithCacheKey);
+        } else {
+          // For category results, preload to category cache
+          final currentCategory = _categories.isNotEmpty
+              ? _categories[_tabController.index]
+              : '';
+          if (currentCategory.isNotEmpty) {
+            _preloadSkinTonesForEmoji(currentCategory, emojiWithCacheKey);
+          }
         }
       } catch (e) {
         // debugPrint('Error getting local position for emoji $emoji: $e');
@@ -469,15 +588,7 @@ class _FluentEmojiPickerState extends State<FluentEmojiPicker>
 
   // Helper method to get combined image cache for search
   Map<String, Uint8List> _getCombinedImageCache() {
-    final combinedCache = <String, Uint8List>{};
-    for (final category in _categories) {
-      final categoryCache = _emojiCacheManager.getCategoryImageCache(
-        category,
-        _selectedStyle,
-      );
-      combinedCache.addAll(categoryCache);
-    }
-    return combinedCache;
+    return _emojiCacheManager.getCombinedImageCache(_selectedStyle);
   }
 
   @override
@@ -592,8 +703,10 @@ class _FluentEmojiPickerState extends State<FluentEmojiPicker>
           final previousStyle = _selectedStyle;
           setState(() {
             _selectedStyle = style!;
-            // Only clear image caches for style change, not emoji data
+            // Clear caches for style change
             _emojiCacheManager.clearCachesForStyleChange();
+            // Clear search results to force reload with new style
+            _searchResults = [];
           });
 
           // Reload current category with new style
@@ -601,6 +714,11 @@ class _FluentEmojiPickerState extends State<FluentEmojiPicker>
             final currentCategory = _categories[_tabController.index];
             _loadCategoryCompletely(currentCategory);
             _preloadAdjacentCategories();
+          }
+
+          // Re-perform search if we're currently searching
+          if (_isSearching && _searchController.text.isNotEmpty) {
+            _performSearch(_searchController.text);
           }
 
           debugPrint(

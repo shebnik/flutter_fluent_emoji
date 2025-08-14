@@ -13,10 +13,15 @@ class EmojiCacheManager {
   final Map<String, bool> _categoryFullyLoaded = {};
   final Map<String, Map<String, Uint8List>> _imageCache = {};
   final Set<String> _loadingCategories = {};
+  final Map<String, Map<String, Uint8List>> _searchImageCache = {};
 
   // Helper method to create cache key
   String _getCacheKey(String category, EmojiStyle style) {
     return '$category:${style.value}';
+  }
+  
+  String _getSearchCacheKey(EmojiStyle style) {
+    return 'search:${style.value}';
   }
 
   // Getters for cache access (these remain for backward compatibility)
@@ -37,6 +42,7 @@ class EmojiCacheManager {
   void clearCachesForStyleChange() {
     _categoryFullyLoaded.clear();
     _imageCache.clear();
+    _searchImageCache.clear(); 
     // Keep category data cache as it doesn't depend on style
   }
 
@@ -58,6 +64,12 @@ class EmojiCacheManager {
 
     // Remove loading states for this style
     _loadingCategories.removeWhere((key) => key.endsWith(':${style.value}'));
+  }
+  
+  // Clear search cache for specific style
+  void clearSearchCacheForStyle(EmojiStyle style) {
+    final key = _getSearchCacheKey(style);
+    _searchImageCache.remove(key);
   }
 
   bool isCategoryFullyLoaded(String category, EmojiStyle style) {
@@ -109,6 +121,14 @@ class EmojiCacheManager {
     }
     return _imageCache[key]!;
   }
+  
+  Map<String, Uint8List> getSearchImageCache(EmojiStyle style) {
+    final key = _getSearchCacheKey(style);
+    if (!_searchImageCache.containsKey(key)) {
+      _searchImageCache[key] = {};
+    }
+    return _searchImageCache[key]!;
+  }
 
   // Fixed getCachedImage method - finds cached image using emoji's cache key
   Uint8List? getCachedImage(EmojiData emoji, EmojiStyle style) {
@@ -116,6 +136,21 @@ class EmojiCacheManager {
     if (emoji.cacheKey != null) {
       // Search through all category image caches for this image
       for (final categoryCache in _imageCache.values) {
+        // Generate the expected image URL for this emoji
+        final imageUrl = EmojiService.getEmojiImageUrl(
+          emoji,
+          style: style,
+          skinTone: emoji.selectedSkinTone ?? SkinTone.defaultTone,
+        );
+
+        if (categoryCache.containsKey(imageUrl)) {
+          final cachedBytes = categoryCache[imageUrl];
+          if (cachedBytes != null && cachedBytes.isNotEmpty) {
+            return cachedBytes;
+          }
+        }
+      }
+      for (final categoryCache in _searchImageCache.values) {
         // Generate the expected image URL for this emoji
         final imageUrl = EmojiService.getEmojiImageUrl(
           emoji,
@@ -144,7 +179,31 @@ class EmojiCacheManager {
         }
       }
     }
+    for (final categoryCache in _searchImageCache.values) {
+      if (categoryCache.containsKey(imageUrl)) {
+        final cachedBytes = categoryCache[imageUrl];
+        if (cachedBytes != null && cachedBytes.isNotEmpty) {
+          return cachedBytes;
+        }
+      }
+    }
     return null;
+  }
+  
+  // Get combined image cache including search cache
+  Map<String, Uint8List> getCombinedImageCache(EmojiStyle style) {
+    final combinedCache = <String, Uint8List>{};
+    
+    // Add all category caches
+    for (final categoryCache in _imageCache.values) {
+      combinedCache.addAll(categoryCache);
+    }
+    
+    // Add search cache
+    final searchCache = getSearchImageCache(style);
+    combinedCache.addAll(searchCache);
+    
+    return combinedCache;
   }
 
   // Debug method to show cache status
