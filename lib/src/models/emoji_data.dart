@@ -12,7 +12,8 @@ class EmojiData {
   final bool isSkintoneBased;
   final Map<String, String>? styles;
   final Map<String, Map<String, String>>? skintones;
-  final SkinTone? selectedSkinTone; // Added for skin tone selection tracking
+  final SkinTone? selectedSkinTone;
+  final String? cacheKey; // Added cache key field
 
   const EmojiData({
     required this.cldr,
@@ -29,6 +30,7 @@ class EmojiData {
     this.styles,
     this.skintones,
     this.selectedSkinTone,
+    this.cacheKey,
   });
 
   factory EmojiData.fromJson(Map<String, dynamic> json) {
@@ -56,6 +58,7 @@ class EmojiData {
               ),
             )
           : null,
+      // Don't include cacheKey in fromJson as it's generated at runtime
     );
   }
 
@@ -74,6 +77,7 @@ class EmojiData {
       'isSkintoneBased': isSkintoneBased,
       'styles': styles,
       'skintones': skintones,
+      // Don't include runtime fields like cacheKey and selectedSkinTone in JSON
     };
   }
 
@@ -92,6 +96,7 @@ class EmojiData {
     Map<String, String>? styles,
     Map<String, Map<String, String>>? skintones,
     SkinTone? selectedSkinTone,
+    String? cacheKey,
   }) {
     return EmojiData(
       cldr: cldr ?? this.cldr,
@@ -109,6 +114,24 @@ class EmojiData {
       styles: styles ?? this.styles,
       skintones: skintones ?? this.skintones,
       selectedSkinTone: selectedSkinTone ?? this.selectedSkinTone,
+      cacheKey: cacheKey ?? this.cacheKey,
+    );
+  }
+
+  /// Generates a cache key for this emoji with the given style and skin tone
+  String generateCacheKey(EmojiStyle style, [SkinTone? skinTone]) {
+    final effectiveSkinTone =
+        skinTone ?? selectedSkinTone ?? SkinTone.defaultTone;
+    return '${cldr}_${style.value}_${effectiveSkinTone.value}';
+  }
+
+  /// Creates a copy of this emoji with a generated cache key
+  EmojiData withCacheKey(EmojiStyle style, [SkinTone? skinTone]) {
+    final effectiveSkinTone =
+        skinTone ?? selectedSkinTone ?? SkinTone.defaultTone;
+    return copyWith(
+      selectedSkinTone: effectiveSkinTone,
+      cacheKey: generateCacheKey(style, effectiveSkinTone),
     );
   }
 }
